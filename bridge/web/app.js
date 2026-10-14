@@ -24,6 +24,8 @@ const state = {
   bambuLoaded: false,
   displayDirty: false,
   displaySaving: false,
+  audioDirty: false,
+  audioSaving: false,
   codexUiSaving: false,
   codexChecking: false,
   codexCheck: null,
@@ -1071,6 +1073,7 @@ function renderOverview(overview) {
   setBridgeState(bridge);
   renderBluetooth(overview.bluetooth || {});
   renderFirmware(overview.firmware || {});
+  renderAudio(overview.audio || {});
   byId("usage-ring").style.setProperty("--progress", `${weekly * 3.6}deg`);
   byId("five-hour-ring").style.setProperty("--progress", `${fiveHour * 3.6}deg`);
   setText("weekly-value", weeklyAvailable ? `${weekly}%` : "--");
@@ -1141,6 +1144,49 @@ function renderOverview(overview) {
   setText("custom-nav-state", custom.enabled ? "已启用" : "未启用");
   if (!state.customLoaded || (!state.customDirty && !state.customSaving)) populateCustomForm(custom);
   byId("fatal-state").hidden = true;
+}
+
+function renderAudio(audio) {
+  const labels = { idle: "尚未测试", pending: "等待设备", played: "设备已播放", failed: "播放失败", timeout: "等待超时" };
+  const badge = byId("audio-badge");
+  badge.textContent = labels[audio.state] || "尚未测试";
+  badge.dataset.state = audio.state === "played" ? "success" : audio.state === "pending" ? "running" : audio.state === "failed" || audio.state === "timeout" ? "error" : "idle";
+  setText("audio-detail", audio.detail || "需要支持扬声器测试的固件，请保持 Dotii 唤醒。");
+  if (!state.audioDirty && !state.audioSaving) {
+    byId("audio-volume").value = audio.volume ?? 15;
+    setText("audio-volume-output", `${byId("audio-volume").value}%`);
+  }
+  byId("audio-test").disabled = state.audioSaving || audio.state === "pending";
+  byId("audio-save").disabled = state.audioSaving;
+}
+
+async function saveAudio(test = false) {
+  if (state.audioSaving) return;
+  state.audioSaving = true;
+  renderAudio(state.overview?.audio || {});
+  try {
+    let response = await fetch("/api/v1/admin/audio/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ volume: Number(byId("audio-volume").value) }),
+    });
+    let result = await response.json();
+    if (!response.ok) throw new Error(result.error || "音量保存失败");
+    state.audioDirty = false;
+    if (test) {
+      response = await fetch("/api/v1/admin/audio/test", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      result = await response.json();
+      if (!response.ok) throw new Error(result.error || "扬声器测试发送失败");
+    }
+    renderAudio(result.audio || {});
+    showToast(test ? "已发送测试，请听一下 Dotii 扬声器" : "音量已保存");
+  } catch (error) {
+    showToast(error.message || "扬声器设置失败");
+  } finally {
+    state.audioSaving = false;
+    await refreshOverview();
+  }
 }
 
 function checkText(value) {
@@ -1754,6 +1800,12 @@ document.querySelectorAll("[data-copy]").forEach((button) => {
 byId("refresh-button").addEventListener("click", () => refreshOverview({ announce: true }));
 byId("auto-start").addEventListener("change", (event) => updateAutoStart(event.target.checked));
 byId("display-form").addEventListener("submit", saveDisplaySettings);
+byId("audio-form").addEventListener("submit", (event) => { event.preventDefault(); saveAudio(); });
+byId("audio-test").addEventListener("click", () => saveAudio(true));
+byId("audio-volume").addEventListener("input", (event) => {
+  state.audioDirty = true;
+  setText("audio-volume-output", `${event.target.value}%`);
+});
 byId("dock-angle").addEventListener("input", (event) => {
   const angle = Number(event.target.value);
   state.displayDirty = true;

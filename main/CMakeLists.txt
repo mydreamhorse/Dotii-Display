@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "audio_output.c"
         "app_state.c"
         "connectivity.c"
         "device_config.c"

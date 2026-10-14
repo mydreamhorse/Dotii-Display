@@ -1,4 +1,6 @@
 #include "app_state.h"
+#include "audio_output.h"
+#include "cJSON.h"
 #include "board_input.h"
 #include "ble_bridge.h"
 #include "bsp/esp-bsp.h"
@@ -6,6 +8,7 @@
 #include "device_config.h"
 #include "esp_app_desc.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -14,6 +17,11 @@
 #include "state_ui.h"
 
 static const char *TAG = "state_display";
+
+static void *json_allocate(size_t size)
+{
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
 
 static const char *reset_reason_name(esp_reset_reason_t reason)
 {
@@ -85,6 +93,11 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_error);
     }
     log_reset_diagnostics();
+    /* Snapshots can contain several conversations. Small JSON allocations
+       must not exhaust the internal memory reserved for radios and audio DMA.
+       Install the shared hooks before either network worker starts. */
+    cJSON_Hooks json_hooks = {.malloc_fn = json_allocate, .free_fn = heap_caps_free};
+    cJSON_InitHooks(&json_hooks);
     board_input_prepare_after_wake();
     ESP_ERROR_CHECK(device_config_init());
 
@@ -100,6 +113,10 @@ void app_main(void)
         ESP_LOGE(TAG, "Bluetooth bridge unavailable: %s", esp_err_to_name(ble_error));
     }
 
+    esp_err_t audio_error = audio_output_prepare();
+    if (audio_error != ESP_OK) {
+        ESP_LOGW(TAG, "Speaker unavailable: %s", esp_err_to_name(audio_error));
+    }
     lv_display_t *display = bsp_display_start();
     ESP_ERROR_CHECK(display == NULL ? ESP_FAIL : ESP_OK);
     ESP_ERROR_CHECK(bsp_display_lock(1000));

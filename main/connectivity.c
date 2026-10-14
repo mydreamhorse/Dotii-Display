@@ -1,4 +1,5 @@
 #include "connectivity.h"
+#include "audio_output.h"
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -740,6 +741,18 @@ static bool parse_snapshot(const char *json, codex_snapshot_t *snapshot)
     copy_custom_config(root, snapshot);
     copy_bambu_status(root, snapshot);
     copy_dotii_state(root, snapshot);
+    cJSON *audio = cJSON_GetObjectItemCaseSensitive(root, "audio");
+    cJSON *test = cJSON_GetObjectItemCaseSensitive(audio, "test");
+    cJSON *test_id = cJSON_GetObjectItemCaseSensitive(test, "id");
+    cJSON *volume = cJSON_GetObjectItemCaseSensitive(test, "volume");
+    cJSON *ttl = cJSON_GetObjectItemCaseSensitive(test, "ttl_ms");
+    if (cJSON_IsString(test_id) && cJSON_IsNumber(volume) && cJSON_IsNumber(ttl) &&
+        volume->valuedouble == volume->valueint && volume->valueint > 0 && volume->valueint <= 50 &&
+        ttl->valuedouble == ttl->valueint && ttl->valueint > 0 && ttl->valueint <= 30000) {
+        if (!audio_output_test(test_id->valuestring, (uint8_t)volume->valueint, (uint32_t)ttl->valueint)) {
+            (void)connectivity_audio_result(test_id->valuestring, ESP_ERR_NO_MEM);
+        }
+    }
     ok = true;
 
 done:
@@ -993,6 +1006,33 @@ static bool send_bambu_command(bambu_command_t command)
     esp_http_client_cleanup(client);
     ESP_LOGI(TAG, "Bambu %s command: %s, HTTP %d", action, esp_err_to_name(error), status);
     return error == ESP_OK && status == 202;
+}
+
+bool connectivity_audio_result(const char *request_id, int result)
+{
+    const device_config_values_t *device_config = device_config_get();
+    char url[256];
+    strlcpy(url, device_config->bridge_url, sizeof(url));
+    char *last_slash = strrchr(url, '/');
+    if (last_slash == NULL) return false;
+    strlcpy(last_slash + 1, "audio/result", sizeof(url) - (size_t)(last_slash + 1 - url));
+    char payload[160];
+    snprintf(payload, sizeof(payload), "{\"id\":\"%s\",\"result\":\"%s\",\"error\":\"%d\"}",
+             request_id, result == 0 ? "played" : "failed", result);
+    esp_http_client_config_t config = {
+        .url = url, .timeout_ms = 3000, .buffer_size = 512, .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) return false;
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "X-Bridge-Token", device_config->bridge_token);
+    esp_http_client_set_post_field(client, payload, strlen(payload));
+    esp_err_t error = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "Speaker result report: %s HTTP %d", esp_err_to_name(error), status);
+    return error == ESP_OK && status == 200;
 }
 
 static void publish_offline_state(void)

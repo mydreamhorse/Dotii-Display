@@ -34,6 +34,7 @@ from codex_app_server import probe_app_server, run_collector
 from bambu_client import BambuConfigStore, BambuService
 from bluetooth_bridge import BluetoothBridge
 from firmware_flasher import FirmwareFlasher
+from audio_control import AudioControl
 from platforms import current_platform
 from runtime_paths import (
     application_root,
@@ -1144,7 +1145,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         address = local_ipv4()
         runtime = self.bridge.runtime.snapshot()
         return {
-            "app": {"name": "Dotii 管理中心", "version": "1.1.1"},
+            "app": {"name": "Dotii 管理中心", "version": "1.1.2"},
             "bridge": {
                 "online": True,
                 "local_url": f"http://127.0.0.1:{self.bridge.server_port}",
@@ -1162,6 +1163,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "bambu_config": self.bridge.bambu_config.public(),
             "bluetooth": self.bridge.bluetooth.snapshot(),
             "firmware": self.bridge.firmware.snapshot(),
+            "audio": self.bridge.audio.public(),
             "modules": [
                 {"id": "codex", "name": "Codex", "enabled": snapshot["modules"]["codex"], "available": True, "locked": False},
                 {"id": "bambu", "name": "Bambu", "enabled": snapshot["modules"]["bambu"], "available": True, "locked": False},
@@ -1233,6 +1235,28 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path in {"/api/v1/admin/audio/config", "/api/v1/admin/audio/test", "/api/v1/audio/result"}:
+            if path.startswith("/api/v1/admin/"):
+                if self._deny_nonlocal():
+                    return
+            elif not self._authorized():
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid bridge token"})
+                return
+            try:
+                payload = self._read_admin_action()
+                if path.endswith("/config"):
+                    result = self.bridge.audio.configure(payload)
+                elif path.endswith("/test"):
+                    result = self.bridge.audio.test()
+                else:
+                    result = self.bridge.audio.report(payload)
+                self._send_json(HTTPStatus.ACCEPTED if path.endswith("/test") else HTTPStatus.OK,
+                                {"ok": True, "audio": result})
+            except RuntimeError as error:
+                self._send_json(HTTPStatus.CONFLICT, {"error": str(error)})
+            except (OSError, ValueError, UnicodeDecodeError) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
         if path == "/api/v1/admin/codex/check":
             if self._deny_nonlocal():
                 return
@@ -1517,6 +1541,7 @@ class BridgeServer(ThreadingHTTPServer):
         self.bluetooth = bluetooth
         self.firmware = firmware
         self.runtime_folder = runtime_folder
+        self.audio = AudioControl(runtime_folder / "audio.json")
         self.application_folder = application_folder
         self.codex_command = codex_command
         self.host_parent_pid = host_parent_pid
@@ -1534,6 +1559,7 @@ class BridgeServer(ThreadingHTTPServer):
             snapshot, snapshot["bambu"], modules["dotii"], self.dotii.read()
         )
         snapshot["display"] = self.display.read()
+        snapshot["audio"] = self.audio.device_snapshot()
         return snapshot
 
 
