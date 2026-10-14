@@ -601,18 +601,20 @@
 
             <article class="dependency-panel" aria-labelledby="audio-heading">
               <div class="dependency-heading">
-                <div><h3 id="audio-heading">扬声器</h3><p>手动播放半秒提示音，检查扬声器是否正常。</p></div>
+                <div><h3 id="audio-heading">音频测试</h3><p>测试提示音，或录下自己的声音并原声回放。</p></div>
                 <span class="dependency-badge" id="audio-badge" data-state="idle">尚未测试</span>
               </div>
               <form id="audio-form">
-                <label for="audio-volume">提示音音量（0 为静音）</label>
+                <label for="audio-volume">播放音量（0 为静音）</label>
                 <input id="audio-volume" type="range" min="0" max="50" step="1" value="15">
                 <output id="audio-volume-output" for="audio-volume">15%</output>
                 <div class="dependency-actions">
                   <button class="quiet-button" id="audio-save" type="submit">保存音量</button>
                   <button class="primary-button" id="audio-test" type="button">测试扬声器</button>
+                  <button class="primary-button" id="audio-record-test" type="button">录音并回放（5 秒）</button>
                 </div>
               </form>
+              <p>录音测试：听到提示音后，对着 Dotii 说话 5 秒，随后自动回放。录音仅在设备内存中暂存，完成后释放。</p>
               <div class="dependency-status" id="audio-detail" role="status" aria-live="polite">需要支持扬声器测试的固件，请保持 Dotii 唤醒。</div>
             </article>
 

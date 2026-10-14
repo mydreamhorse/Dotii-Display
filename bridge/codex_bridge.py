@@ -1145,7 +1145,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         address = local_ipv4()
         runtime = self.bridge.runtime.snapshot()
         return {
-            "app": {"name": "Dotii 管理中心", "version": "1.1.2"},
+            "app": {"name": "Dotii 管理中心", "version": "1.1.3"},
             "bridge": {
                 "online": True,
                 "local_url": f"http://127.0.0.1:{self.bridge.server_port}",
@@ -1235,7 +1235,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
-        if path in {"/api/v1/admin/audio/config", "/api/v1/admin/audio/test", "/api/v1/audio/result"}:
+        if path in {"/api/v1/admin/audio/config", "/api/v1/admin/audio/test",
+                    "/api/v1/admin/audio/record-test", "/api/v1/audio/result"}:
             if path.startswith("/api/v1/admin/"):
                 if self._deny_nonlocal():
                     return
@@ -1248,9 +1249,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     result = self.bridge.audio.configure(payload)
                 elif path.endswith("/test"):
                     result = self.bridge.audio.test()
+                elif path.endswith("/record-test"):
+                    result = self.bridge.audio.test("record_playback")
                 else:
                     result = self.bridge.audio.report(payload)
-                self._send_json(HTTPStatus.ACCEPTED if path.endswith("/test") else HTTPStatus.OK,
+                self._send_json(HTTPStatus.ACCEPTED if path.endswith(("/test", "/record-test")) else HTTPStatus.OK,
                                 {"ok": True, "audio": result})
             except RuntimeError as error:
                 self._send_json(HTTPStatus.CONFLICT, {"error": str(error)})

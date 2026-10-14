@@ -16,6 +16,8 @@ from codex_bridge import BridgeHandler
 
 
 class AudioControlTests(unittest.TestCase):
+    METRICS = {"sample_rate": 16000, "samples": 80000, "peak": 5000, "rms": 900, "clipped_samples": 0}
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -76,6 +78,65 @@ class AudioControlTests(unittest.TestCase):
                 self.audio.report({"id": request["request_id"], "result": result})
         self.assertEqual(self.audio.public()["state"], "pending")
 
+    def recording_report(self, request: dict, result: str, **extra: object) -> dict:
+        return {"id": request["request_id"], "kind": "record_playback", "result": result, **extra}
+
+    def test_recording_is_invisible_to_old_firmware_and_never_restarts_implicitly(self) -> None:
+        request = self.audio.test("record_playback")
+        snapshot = self.audio.device_snapshot()
+        self.assertIsNone(snapshot["test"])
+        self.assertEqual(snapshot["record_test"]["id"], request["request_id"])
+        restarted = AudioControl(self.path)
+        self.assertIsNone(restarted.device_snapshot()["record_test"])
+        self.assertIsNone(restarted.public()["metrics"])
+
+    def test_recording_progress_keeps_audio_exclusive_and_consumes_command(self) -> None:
+        request = self.audio.test("record_playback")
+        for state in ("recording", "playing"):
+            self.audio.report(self.recording_report(request, state, metrics=self.METRICS))
+            self.assertIsNone(self.audio.device_snapshot()["record_test"])
+            for kind in ("tone", "record_playback"):
+                with self.assertRaises(RuntimeError):
+                    self.audio.test(kind)
+        played = self.recording_report(request, "played", metrics=self.METRICS)
+        self.assertEqual(self.audio.report(played)["metrics"], self.METRICS)
+        self.assertEqual(self.audio.report(played)["state"], "played")
+        self.assertIsNone(self.audio.test()["metrics"])
+
+    def test_recording_requires_matching_kind_and_complete_bounded_capture_metrics(self) -> None:
+        request = self.audio.test("record_playback")
+        with self.assertRaises(ValueError):
+            self.audio.report({"id": request["request_id"], "result": "played"})
+        for metrics in (None, {}, {**self.METRICS, "samples": 79999},
+                        {**self.METRICS, "rms": True}, {**self.METRICS, "peak": 32769},
+                        {**self.METRICS, "rms": 6000}, {**self.METRICS, "sample_rate": 22050}):
+            with self.subTest(metrics=metrics), self.assertRaises(ValueError):
+                self.audio.report(self.recording_report(request, "played", metrics=metrics))
+        self.assertEqual(self.audio.public()["state"], "pending")
+
+    def test_progress_cannot_move_backwards_or_reopen_a_finished_test(self) -> None:
+        request = self.audio.test("record_playback")
+        self.audio.report(self.recording_report(request, "playing", metrics=self.METRICS))
+        with self.assertRaises(ValueError):
+            self.audio.report(self.recording_report(request, "recording"))
+        self.audio.report(self.recording_report(request, "failed", error="270"))
+        with self.assertRaises(ValueError):
+            self.audio.report(self.recording_report(request, "played", metrics=self.METRICS))
+
+    def test_in_progress_recording_still_times_out_and_rejects_late_result(self) -> None:
+        with mock.patch("audio_control.time.monotonic", return_value=100):
+            request = self.audio.test("record_playback")
+            self.audio.report(self.recording_report(request, "recording"))
+        with mock.patch("audio_control.time.monotonic", return_value=131):
+            self.assertEqual(self.audio.public()["state"], "timeout")
+            with self.assertRaises(ValueError):
+                self.audio.report(self.recording_report(request, "played", metrics=self.METRICS))
+
+    def test_quiet_capture_reports_weak_signal_without_claiming_speech_recognition(self) -> None:
+        request = self.audio.test("record_playback")
+        result = self.audio.report(self.recording_report(request, "played", metrics={**self.METRICS, "rms": 30}))
+        self.assertIn("输入信号较弱", result["detail"])
+
 
 class AudioApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -117,6 +178,23 @@ class AudioApiTests(unittest.TestCase):
         self.assertEqual(self.post("/api/v1/admin/audio/config", {"volume": 20})[0], 200)
         self.assertEqual(self.post("/api/v1/admin/audio/test", {})[0], 202)
         self.assertEqual(self.post("/api/v1/admin/audio/test", {})[0], 409)
+
+    def test_record_endpoint_limits_access_and_requires_authenticated_capture_result(self) -> None:
+        path = "/api/v1/admin/audio/record-test"
+        with mock.patch.object(BridgeHandler, "_local_admin", return_value=False):
+            self.assertEqual(self.post(path, {})[0], 403)
+        self.assertEqual(self.post(path, {}, content_type="text/plain")[0], 400)
+        self.server.audio.configure({"volume": 0})
+        self.assertEqual(self.post(path, {})[0], 400)
+        self.server.audio.configure({"volume": 30})
+        status, body = self.post(path, {})
+        self.assertEqual(status, 202)
+        self.assertEqual(self.post(path, {})[0], 409)
+        report = {"id": body["audio"]["request_id"], "kind": "record_playback", "result": "recording"}
+        self.assertEqual(self.post("/api/v1/audio/result", report)[0], 401)
+        self.assertEqual(self.post("/api/v1/audio/result", report, token=self.server.token)[0], 200)
+        report.update(result="played", metrics=AudioControlTests.METRICS)
+        self.assertEqual(self.post("/api/v1/audio/result", report, token=self.server.token)[0], 200)
 
 
 if __name__ == "__main__":

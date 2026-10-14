@@ -742,15 +742,18 @@ static bool parse_snapshot(const char *json, codex_snapshot_t *snapshot)
     copy_bambu_status(root, snapshot);
     copy_dotii_state(root, snapshot);
     cJSON *audio = cJSON_GetObjectItemCaseSensitive(root, "audio");
-    cJSON *test = cJSON_GetObjectItemCaseSensitive(audio, "test");
+    cJSON *record_test = cJSON_GetObjectItemCaseSensitive(audio, "record_test");
+    bool record_playback = cJSON_IsObject(record_test);
+    cJSON *test = record_playback ? record_test : cJSON_GetObjectItemCaseSensitive(audio, "test");
     cJSON *test_id = cJSON_GetObjectItemCaseSensitive(test, "id");
     cJSON *volume = cJSON_GetObjectItemCaseSensitive(test, "volume");
     cJSON *ttl = cJSON_GetObjectItemCaseSensitive(test, "ttl_ms");
     if (cJSON_IsString(test_id) && cJSON_IsNumber(volume) && cJSON_IsNumber(ttl) &&
         volume->valuedouble == volume->valueint && volume->valueint > 0 && volume->valueint <= 50 &&
         ttl->valuedouble == ttl->valueint && ttl->valueint > 0 && ttl->valueint <= 30000) {
-        if (!audio_output_test(test_id->valuestring, (uint8_t)volume->valueint, (uint32_t)ttl->valueint)) {
-            (void)connectivity_audio_result(test_id->valuestring, ESP_ERR_NO_MEM);
+        if (!audio_output_test(test_id->valuestring, (uint8_t)volume->valueint, (uint32_t)ttl->valueint, record_playback)) {
+            (void)connectivity_audio_report(test_id->valuestring, record_playback ? "record_playback" : "tone",
+                                            "failed", ESP_ERR_NO_MEM, NULL);
         }
     }
     ok = true;
@@ -1010,15 +1013,29 @@ static bool send_bambu_command(bambu_command_t command)
 
 bool connectivity_audio_result(const char *request_id, int result)
 {
+    return connectivity_audio_report(request_id, "tone", result == 0 ? "played" : "failed", result, NULL);
+}
+
+bool connectivity_audio_report(const char *request_id, const char *kind, const char *state,
+                               int result, const audio_recording_metrics_t *metrics)
+{
+    if (request_id == NULL || strlen(request_id) != 16 || strspn(request_id, "0123456789abcdef") != 16) return false;
     const device_config_values_t *device_config = device_config_get();
     char url[256];
     strlcpy(url, device_config->bridge_url, sizeof(url));
     char *last_slash = strrchr(url, '/');
     if (last_slash == NULL) return false;
     strlcpy(last_slash + 1, "audio/result", sizeof(url) - (size_t)(last_slash + 1 - url));
-    char payload[160];
-    snprintf(payload, sizeof(payload), "{\"id\":\"%s\",\"result\":\"%s\",\"error\":\"%d\"}",
-             request_id, result == 0 ? "played" : "failed", result);
+    char measurement[160] = "null";
+    if (metrics != NULL) {
+        snprintf(measurement, sizeof(measurement),
+                 "{\"sample_rate\":16000,\"samples\":%lu,\"peak\":%lu,\"rms\":%lu,\"clipped_samples\":%lu}",
+                 (unsigned long)metrics->samples, (unsigned long)metrics->peak,
+                 (unsigned long)metrics->rms, (unsigned long)metrics->clipped_samples);
+    }
+    char payload[320];
+    snprintf(payload, sizeof(payload), "{\"id\":\"%s\",\"kind\":\"%s\",\"result\":\"%s\",\"error\":\"%d\",\"metrics\":%s}",
+             request_id, kind, state, result, measurement);
     esp_http_client_config_t config = {
         .url = url, .timeout_ms = 3000, .buffer_size = 512, .crt_bundle_attach = esp_crt_bundle_attach,
     };
@@ -1031,7 +1048,7 @@ bool connectivity_audio_result(const char *request_id, int result)
     esp_err_t error = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
-    ESP_LOGI(TAG, "Speaker result report: %s HTTP %d", esp_err_to_name(error), status);
+    ESP_LOGI(TAG, "Audio %s report: %s HTTP %d", state, esp_err_to_name(error), status);
     return error == ESP_OK && status == 200;
 }
 

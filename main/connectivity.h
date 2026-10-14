@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "audio_output.h"
 
 void connectivity_start(void);
 void connectivity_request_refresh(void);
@@ -14,3 +15,5 @@ const uint8_t *connectivity_custom_image_data(uint32_t revision);
 const uint8_t *connectivity_bambu_camera_data(uint32_t revision);
 bool connectivity_bambu_command(const char *action);
 bool connectivity_audio_result(const char *request_id, int result);
+bool connectivity_audio_report(const char *request_id, const char *kind, const char *state,
+                               int result, const audio_recording_metrics_t *metrics);
